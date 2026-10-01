@@ -6,8 +6,11 @@ Scope: move the live Paperclip control plane from the Hostinger VPS
 (`paperclip.tyr-x.com`, compose project at `/opt/tyrx-paperclip`) to
 **tyr-dash-ops** (the tyr-ops / dash-ops target host).
 
-This runbook does **not** move the macOS execution host. The Mac Studio keeps
-running agent workloads; only the control plane that SSHes into it changes.
+This runbook does **not** move the Mac Studio's agent workloads. The Studio
+keeps executing agent runs, and the control plane that SSHes into it changes
+hosts. It **does** move the security layer: the Wazuh manager that runs on the
+Studio today relocates to tyr-dash-ops under the locked co-location rule in
+section 0.3.
 
 ## 0. How to read this
 
@@ -15,13 +18,24 @@ running agent workloads; only the control plane that SSHes into it changes.
   verifications passed.
 - Every phase has **Goal → Preconditions → Steps → Verify → Rollback → Gate**.
 - `GATE Gn` means stop and get Marc's explicit go-ahead before continuing.
+- **Gate numbering is local to this runbook.** `G0` to `G10` here are cutover
+  checkpoints only. They are not Marc's governance gates and they do not
+  renumber, replace, or reinterpret any TYR-677 gate or the locked G12
+  Vulcan-active decision. When you read a gate aloud, say "runbook gate G*n*".
 - Anything written as `<angle-brackets>` is **unverified** and must be filled in
   during Phase A discovery. This runbook deliberately does not invent facts
   about tyr-dash-ops.
 
 ### 0.1 HARD STOP list — never do these during this cutover
 
-1. **No Vulcan unpause.** Vulcan stays paused for the entire window.
+1. **No Vulcan state change as part of this cutover.** Vulcan is **active** by
+   Marc's locked G12 decision, and that decision stands — this runbook does not
+   ban it and must not be read as a pause order. What is forbidden here is
+   *changing* Vulcan's state, seat, or config to work around a cutover problem.
+   During the cutover window Vulcan is governed by the same rules as every other
+   agent: it is held by the task drain in Phases 7 and 8, and it is not
+   hand-released, re-seated, or re-pointed outside a Marc gate. Vulcan's seat and
+   its config/instructions move with the Paperclip instance (section 0.3).
 2. **No Hermes routing change.** Do not touch Hermes routing, adapters, or
    gateway config as part of the move.
 3. **No Paperclip recycle, restart, or redeploy on the live VPS without a Marc
@@ -42,6 +56,21 @@ running agent workloads; only the control plane that SSHes into it changes.
    until the watch window in Phase 10 closes with Marc's sign-off.
 9. **No DNS flip** until the new host passes health checks *and* completes one
    verified end-to-end agent run (Phase 8).
+10. **No split security layer at acceptance.** A temporary split during the
+    window is allowed only under an explicit Marc gate, and only with a written
+    end state that is fully co-located on tyr-dash-ops. Acceptance and
+    decommission (runbook gate G10) cannot pass while any component in section
+    0.3 still runs on another host.
+11. **No security component on Mac2, ever.** Mac2 is a build and workstation
+    machine only. Do not place the Wazuh manager, Greenbone, the Paperclip
+    control plane, or Vulcan's primary seat on it — not permanently, and not as
+    a "temporary" overflow when tyr-dash-ops looks tight. If capacity fails,
+    **STOP** and escalate to Marc; do not relieve pressure by splitting onto
+    Mac2 or back onto the Studio.
+12. **No Greenbone deployment anywhere but tyr-dash-ops.** Greenbone CE is not
+    deployed today. When it is deployed, tyr-dash-ops is the only permitted
+    target. Do not stand it up on the Studio, on Mac2, or on the VPS as an
+    interim.
 
 ### 0.2 Locked inventory (do not contradict without evidence)
 
@@ -56,8 +85,73 @@ running agent workloads; only the control plane that SSHes into it changes.
 | Draft PR #6 documents Node 24.11+ / pnpm 9.15.4 / frozen-lockfile mismatch | Host build prerequisite regardless of whether #6 merges |
 | Dual-host DB heartbeat risk | Both hosts must never have a working path to the same database while either admits work (Phase 6) |
 | Live Paperclip remains on the VPS today | The VPS is the source of truth until Phase 9 completes |
+| The entire security layer must be co-located on tyr-dash-ops (section 0.3) | The cutover is not complete when only the board moves; the Wazuh manager must relocate off the Studio, and capacity must be measured first |
 
-### 0.3 Variables — fill before execution
+### 0.3 LOCKED — the entire security layer is co-located on tyr-dash-ops
+
+Marc locked this rule. Security must not be split across hosts. tyr-dash-ops is
+the single security host, and it must house all four of the following:
+
+| # | Component | State today | Requirement for this cutover |
+| --- | --- | --- | --- |
+| 1 | **Paperclip board** (control plane) | Hostinger VPS | Moves to tyr-dash-ops — Phases 1 to 9 of this runbook |
+| 2 | **Vulcan agent seat + config/instructions** | On the live Paperclip instance | Moves with the Paperclip instance. The seat is not re-pointed to another host, and the config/instructions travel with the instance data in Phase 3 |
+| 3 | **Wazuh manager** | Mac Studio | **Relocates to tyr-dash-ops.** Agents are re-pointed from the Studio manager to the tyr-dash-ops manager. A permanent split is not acceptable |
+| 4 | **Greenbone CE** | Not deployed. Code lives in `tyrxtech/tyrx-ai-security` | When it is deployed, it targets tyr-dash-ops. No other host is permitted. (That repository is not readable from this agent's credentials, so this runbook makes no claim about its contents or its sizing requirements) |
+
+**Mac2 is explicitly out of scope as a security host.** Mac2 is a build and
+workstation machine only: no Wazuh manager, no Greenbone, no Paperclip control
+plane, no Vulcan primary seat. See HARD STOP 11.
+
+**The Mac Studio keeps executing agent runs.** Relocating the Wazuh manager off
+the Studio does not change the Studio's role as the execution host, and it does
+not change the SSH execution path in Phase 4.
+
+#### Sequencing
+
+The Wazuh relocation is a distinct workstream with its own Marc gate. It must
+not be interleaved with the database and DNS phases, because a failure in either
+one would then be hard to attribute.
+
+1. Capacity is measured first — Phase A rows A12 to A15. Capacity is
+   **unverified until measured**.
+2. The board cutover completes through runbook gate G8 (new host healthy, one
+   clean end-to-end run).
+3. Only then relocate the Wazuh manager and re-point agents, under a Marc gate.
+4. Acceptance and decommission (runbook gate G10) require the co-located end
+   state in full.
+
+#### Temporary dual-run
+
+A temporary period where a security component runs in two places, or still runs
+on the Studio after the board has moved, is permitted **only** when all three
+hold:
+
+- Marc gives an explicit gate for the temporary state.
+- The written end state is recorded in this runbook and is fully co-located on
+  tyr-dash-ops.
+- A named owner and a review date are recorded with it.
+
+An undocumented split, or a split that outlives acceptance, is a HARD STOP 10
+violation.
+
+#### Capacity is the gating risk — prior Studio experience
+
+Recorded by Marc from the Mac Studio deployment, and carried here as a warning,
+not as a measurement of tyr-dash-ops:
+
+- Wazuh plus other heavy stacks **contested the Studio's ~16 GiB Docker VM**.
+- Greenbone was **deferred on the Studio for RAM reasons** when it was to sit
+  beside Wazuh.
+
+Therefore treat Paperclip + Wazuh + future Greenbone on one host as a capacity
+question that must be answered with measurements before the relocation is
+scheduled. **If headroom fails, STOP and escalate to Marc.** Do not resolve a
+capacity failure by splitting onto Mac2 or by leaving the manager on the Studio;
+the permitted responses are to add resources to tyr-dash-ops, or to re-plan with
+Marc.
+
+### 0.4 Variables — fill before execution
 
 ```sh
 # Old host (Hostinger VPS)
@@ -106,11 +200,27 @@ this runbook may be executed until this table is complete.
 | A9 | **DB mode on the VPS**: embedded or external `DATABASE_URL` | Phase 3 step 3.1 | |
 | A10 | Backup destination with room for a full logical dump | `ssh $OPS_SSH 'df -h <backup-path>'` | |
 | A11 | Vault of record for this cutover — Marc said 1Password; the Jev secret lives in **Proton Pass** today. Pick one and record it | Marc | |
+| A12 | **Headroom on tyr-dash-ops for Paperclip + Wazuh (+ future Greenbone):** total and currently free RAM, disk, and CPU, plus the container runtime's own memory ceiling if it runs in a VM | `ssh $OPS_SSH 'nproc; free -g; df -h; docker info --format "{{.MemTotal}} {{.NCPU}}"'` | |
+| A13 | **Does the Wazuh manager fit beside the board?** Measure the board's steady-state and peak footprint on the new host after Phase 8, then compare the remainder against the Studio manager's measured footprint (indexer, manager, dashboard, and its data volume growth rate) | `docker stats --no-stream` on both hosts; `du -sh` on the Wazuh data volume on the Studio | |
+| A14 | **Agent re-point path from the Studio manager:** how many agents are enrolled, how they are enrolled (enrollment password, keys, or manifest), how `ossec.conf` server address is managed per agent, and whether re-enrollment or a server-address change is required | Studio Wazuh manager: `/var/ossec/bin/agent_control -l` (or the containerised equivalent) and the agent config management path | |
+| A15 | **Greenbone CE sizing, when deployed:** RAM, disk, and feed-sync footprint it will add on tyr-dash-ops, from `tyrxtech/tyrx-ai-security` and the Greenbone CE docs | That repository plus upstream sizing guidance — not readable from this agent | |
 
-**Verify.** No blank cells. A6 is a hard blocker: if tyr-dash-ops cannot reach
-the Mac, the cutover cannot complete.
+**Capacity is unverified until measured.** A12 to A15 must contain real numbers
+from the commands above, not estimates. Treat the prior Studio experience in
+section 0.3 as a warning, not a measurement: Wazuh plus heavy stacks contested
+the Studio's ~16 GiB Docker VM, and Greenbone was RAM-deferred beside Wazuh.
 
-**Gate G0.** Marc confirms the discovery table and the choice of vault (A11).
+**If headroom fails, STOP.** Escalate to Marc. Do not split security onto Mac2
+(HARD STOP 11) and do not leave the Wazuh manager permanently on the Studio
+(HARD STOP 10). The permitted responses are to add resources to tyr-dash-ops, or
+to re-plan with Marc.
+
+**Verify.** No blank cells. Two hard blockers: A6 — if tyr-dash-ops cannot reach
+the Mac, the cutover cannot complete; and A12/A13 — if the co-located footprint
+does not fit, the relocation cannot be scheduled.
+
+**Gate G0.** Marc confirms the discovery table, the choice of vault (A11), and
+the measured capacity verdict (A12 to A15).
 
 ## Phase 1 — Cut the code branch off the deploy branch
 
@@ -545,18 +655,27 @@ the VPS, or accepting the loss of everything written since the Phase 7 dump.
    drain status, run success rate, and copy-back duration per run.
 3. Confirm a backup has run on the new host and is not stale.
 4. Confirm the Mac's `authorized_keys` still contains both keys.
+5. **Confirm the security layer is co-located** per section 0.3: the Paperclip
+   board, Vulcan's seat and config/instructions, and the Wazuh manager all run
+   on tyr-dash-ops, every Wazuh agent reports to the tyr-dash-ops manager, no
+   security component runs on Mac2, and Greenbone — if it has been deployed by
+   then — targets tyr-dash-ops. Record the measured footprint against the A12
+   and A13 numbers.
 
 **Only after Marc's sign-off:** remove the VPS key from the Mac's
 `authorized_keys`, archive the final VPS dump to the vault/cold storage, and
 decommission `/opt/tyrx-paperclip`. Keep the `deploy/*` branches forever.
 
-**Gate G10.** Marc authorizes decommission.
+**Gate G10.** Marc authorizes decommission. **This gate cannot pass on a split
+security layer.** If any component in section 0.3 still runs on another host,
+either the relocation finishes first, or Marc records an explicit temporary-split
+gate with a co-located end state, a named owner, and a review date.
 
 ## Appendix A — Marc's gate checklist
 
 | Gate | Confirms |
 | --- | --- |
-| G0 | Discovery table complete; vault of record chosen |
+| G0 | Discovery table complete; vault of record chosen; **measured** capacity verdict for Paperclip + Wazuh (+ future Greenbone) on tyr-dash-ops |
 | G1 | Cutover branch off `deploy/tyr746-26df56cc`; 11/196 divergence; four fix SHAs are ancestors |
 | G2 | `PAPERCLIP_TASK_DRAIN_ON_START` present on the branch and set on the new host |
 | G3 | DB mode known; backup taken; **restore rehearsed successfully** |
@@ -566,7 +685,11 @@ decommission `/opt/tyrx-paperclip`. Keep the `deploy/*` branches forever.
 | G7 | Old host drained, queue quiet, final dump good |
 | G8 | New host healthy, drained at boot, one clean end-to-end run |
 | G9 | DNS flipped; board checks pass on the new host |
-| G10 | Watch window clean; decommission authorized |
+| GS | **Security relocation** (after G8): Wazuh manager moved to tyr-dash-ops, every agent re-pointed and reporting, nothing on Mac2 |
+| G10 | Watch window clean; **security layer verified co-located** (section 0.3); decommission authorized |
+
+Runbook gates are local to this document. They do not renumber or replace any
+TYR-677 gate, and they do not reopen the locked G12 Vulcan-active decision.
 
 ## Appendix B — Quick command reference
 
@@ -603,3 +726,14 @@ hot-restart reporting).
    current practice) and must be settled at G0.
 6. This document must land in `tyrxtech/paperclip` on a branch cut from
    `deploy/tyr746-26df56cc`, not on `master`.
+7. **Capacity for the co-located security layer is unverified until measured.**
+   Rows A12 to A15 are open. The only data points on record are from the Mac
+   Studio — Wazuh contested a ~16 GiB Docker VM and Greenbone was RAM-deferred
+   beside it — and they do not describe tyr-dash-ops.
+8. `tyrxtech/tyrx-ai-security` is not readable from this agent's credentials, so
+   the Greenbone CE footprint in A15 has to be filled in by someone with access.
+   This runbook asserts only the target host, which Marc locked.
+9. The Wazuh relocation and agent re-point procedure is named and gated here
+   (gate GS) but not yet written as steps. It needs its own section once A13 and
+   A14 are answered, including the rollback: keep the Studio manager reachable
+   until every agent reports to tyr-dash-ops.
